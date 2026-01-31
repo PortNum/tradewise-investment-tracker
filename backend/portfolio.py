@@ -45,13 +45,12 @@ def get_portfolio_allocation(db: Session):
         value = quantity * price
         total_value += value
         
-        # 跳过没有名称的资产
-        if not asset.name or not asset.name.strip():
-            continue
+        # 如果资产没有名称，使用symbol作为名称
+        asset_name = asset.name if asset.name and asset.name.strip() else symbol
             
         allocation.append({
             "symbol": symbol,
-            "name": asset.name,
+            "name": asset_name,
             "quantity": quantity,
             "price": price,
             "value": value

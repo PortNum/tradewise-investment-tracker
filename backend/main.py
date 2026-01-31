@@ -201,7 +201,7 @@ def get_chart_data(symbol: str, db: Session = Depends(get_db)):
                 "qfq_high": safe_float(p.qfq_high),
                 "qfq_low": safe_float(p.qfq_low),
                 "qfq_close": safe_float(p.qfq_close),
-                "volume": p.volume
+                "volume": safe_float(p.volume)
             } for p in prices
         ],
         "markers": [{"time": str(t.date), "position": "belowBar" if t.type == "buy" else "aboveBar", "color": "red" if t.type == "buy" else "green", "shape": "arrowUp" if t.type == "buy" else "arrowDown", "text": f"{t.type} {t.quantity}"} for t in txs]
