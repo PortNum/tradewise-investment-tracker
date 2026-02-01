@@ -174,6 +174,19 @@ def get_portfolio_summary(db: Session = Depends(get_db)):
 def get_equity_curve(db: Session = Depends(get_db)):
     return calculate_equity_curve(db)
 
+@app.get("/assets/with-transactions")
+def list_assets_with_transactions(db: Session = Depends(get_db)):
+    """
+    Return only assets that have at least one transaction.
+    """
+    # Get all asset IDs that have transactions
+    asset_ids_with_tx = db.query(Transaction.asset_id).distinct().all()
+    asset_ids = [id[0] for id in asset_ids_with_tx]
+    
+    # Get the actual assets
+    assets = db.query(Asset).filter(Asset.id.in_(asset_ids)).all()
+    return assets
+
 @app.get("/charts/{symbol}")
 def get_chart_data(symbol: str, db: Session = Depends(get_db)):
     asset = db.query(Asset).filter(Asset.symbol == symbol).first()

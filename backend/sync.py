@@ -219,6 +219,43 @@ def get_fund_data(symbol: str, start_date: str = "20000101", name: Optional[str]
     print(f"  Fund data success! Got {len(df)} records")
     return df
 
+def get_etf_name(symbol: str) -> Optional[str]:
+    """
+    Fetch ETF name from various sources.
+    Returns the ETF name if found, None otherwise.
+    """
+    try:
+        # Try ETF ths spot API (more stable)
+        import time
+        time.sleep(0.3)  # Small delay to avoid connection issues
+        etf_spot = ak.fund_etf_spot_ths()
+        if isinstance(etf_spot, pd.DataFrame) and not etf_spot.empty:
+            # Search for symbol in the 基金代码 column
+            etf_row = etf_spot[etf_spot['基金代码'].astype(str) == str(symbol)]
+            if not etf_row.empty:
+                name = str(etf_row['基金名称'].iloc[0])
+                print(f"Found ETF name from THS: {name} for {symbol}")
+                return name
+    except Exception as e:
+        print(f"ETF THS spot failed for {symbol}: {str(e)}")
+    
+    try:
+        # Try ETF spot API (East Money)
+        import time
+        time.sleep(0.3)
+        etf_spot = ak.fund_etf_spot_em()
+        if isinstance(etf_spot, pd.DataFrame) and not etf_spot.empty:
+            # Search for symbol in the 代码 column
+            etf_row = etf_spot[etf_spot['代码'].astype(str) == str(symbol)]
+            if not etf_row.empty:
+                name = str(etf_row['名称'].iloc[0])
+                print(f"Found ETF name from EM: {name} for {symbol}")
+                return name
+    except Exception as e:
+        print(f"ETF EM spot failed for {symbol}: {str(e)}")
+    
+    return None
+
 def sync_asset_data(symbol: str, asset_type: str, name: Optional[str] = None, start_date: str = "20000101"):
     db = SessionLocal()
     
@@ -226,19 +263,22 @@ def sync_asset_data(symbol: str, asset_type: str, name: Optional[str] = None, st
     if not name and asset_type == 'stock':
         try:
             stock_info = ak.stock_individual_info_em(symbol=symbol)
-            if isinstance(stock_info, pd.DataFrame):
+            if isinstance(stock_info, pd.DataFrame) and not stock_info.empty:
                 stock_name_row = stock_info[stock_info['item'] == '股票简称']
                 if not stock_name_row.empty:
                     name = stock_name_row['value'].values[0]
                     print(f"Found stock name: {name} for symbol {symbol}")
         except Exception as e:
             print(f"Failed to fetch stock name for {symbol}: {str(e)}")
+        
+        # If stock API failed, try ETF APIs (for ETF codes)
+        if not name:
+            name = get_etf_name(symbol)
     
-    # Validate: must have name to proceed
+    # If still no name, use symbol as fallback
     if not name or not name.strip():
-        print(f"Error: Cannot sync {symbol} - failed to get stock name. Please check the symbol and try again.")
-        db.close()
-        raise Exception(f"Failed to get stock name for {symbol}. Sync aborted.")
+        name = f"{symbol}"
+        print(f"Using symbol as name for {symbol} (may be ETF or special asset)")
     
     # Check or create asset
     asset = db.query(Asset).filter(Asset.symbol == symbol).first()
@@ -247,9 +287,11 @@ def sync_asset_data(symbol: str, asset_type: str, name: Optional[str] = None, st
         db.add(asset)
         db.commit()
         db.refresh(asset)
-    elif not asset.name:
+    elif not asset.name or asset.name == symbol:
+        # Update name if empty or if it's just the symbol code (placeholder)
         asset.name = name
         db.commit()
+        print(f"Updated asset name from '{asset.name}' to '{name}' for {symbol}")
     
     if asset_type == 'stock':
         df = get_stock_data(symbol, start_date)

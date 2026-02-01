@@ -156,9 +156,11 @@ export default function App() {
     const [chartResetKey, setChartResetKey] = useState(0);
     const [loading, setLoading] = useState(false);
     const [chartMode, setChartMode] = useState('candlestick');
+    const [analysisViewMode, setAnalysisViewMode] = useState('all'); // 'all' or 'traded'
+    const [tradedAssets, setTradedAssets] = useState([]);
 
     // 过滤分析页面的股票列表
-    const filteredAnalysisAssets = 资产.filter(item => {
+    const filteredAnalysisAssets = (analysisViewMode === 'traded' ? tradedAssets : 资产).filter(item => {
         if (!analysisSearchQuery) return true;
         const query = analysisSearchQuery.toLowerCase();
         return item.symbol.toLowerCase().includes(query) ||
@@ -173,6 +175,10 @@ export default function App() {
         try {
             const assetsRes = await axios.get(`${API_BASE}/assets`);
             set资产(assetsRes.data);
+
+            // Fetch assets with transactions
+            const tradedRes = await axios.get(`${API_BASE}/assets/with-transactions`);
+            setTradedAssets(tradedRes.data);
 
             const summaryRes = await axios.get(`${API_BASE}/portfolio/summary`);
             setPortfolioSummary(summaryRes.data);
@@ -343,6 +349,30 @@ export default function App() {
                         <div className="space-y-8">
                             <div className="bg-white p-6 rounded-xl border border-gray-200">
                                 <h2 className="text-lg font-semibold mb-4 text-gray-700">个股分析 - 选择标的</h2>
+
+                                {/* 视图模式切换 */}
+                                <div className="flex gap-2 mb-4">
+                                    <button
+                                        onClick={() => setAnalysisViewMode('all')}
+                                        className={`px-3 py-1.5 text-xs rounded border transition-colors ${
+                                            analysisViewMode === 'all'
+                                                ? 'bg-indigo-600 text-white border-indigo-600'
+                                                : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                                        }`}
+                                    >
+                                        所有标的 ({资产.length})
+                                    </button>
+                                    <button
+                                        onClick={() => setAnalysisViewMode('traded')}
+                                        className={`px-3 py-1.5 text-xs rounded border transition-colors ${
+                                            analysisViewMode === 'traded'
+                                                ? 'bg-indigo-600 text-white border-indigo-600'
+                                                : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                                        }`}
+                                    >
+                                        持仓历史 ({tradedAssets.length})
+                                    </button>
+                                </div>
 
                                 {/* 搜索和下拉选择 */}
                                 <div className="flex flex-col sm:flex-row gap-4 mb-6">
