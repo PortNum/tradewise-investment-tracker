@@ -24,20 +24,31 @@ wheels/
 venv/
 ENV/
 env/
+.venv/
 
 # Database
 *.db
 *.db.backup
 *.sqlite
 *.sqlite3
+*.db-journal
+*.db-shm
+*.db-wal
+
+# 特定路径
+data/
+backend/*.db
 
 # Logs
 *.log
+logs/
 
 # Node / Frontend
 node_modules/
 dist/
 .vite/
+.cache/
+.parcel-cache/
 
 # Environment variables
 .env
@@ -50,13 +61,26 @@ dist/
 *.swp
 *.swo
 *~
+*.sublime-workspace
+*.sublime-project
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Project specific
 backend/__pycache__/
 frontend/node_modules/
 *.ini
 项目介绍.md
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Misc
+*.bak
+*.tmp
+*.temp

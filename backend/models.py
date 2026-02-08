@@ -8,8 +8,8 @@ Base = declarative_base()
 class Asset(Base):
     __tablename__ = 'assets'
     id = Column(Integer, primary_key=True)
-    symbol = Column(String, unique=True, nullable=False) # e.g., '600519'
-    name = Column(String)
+    symbol = Column(String, unique=True, nullable=False) # e.g., '600519' or '512890'
+    name = Column(String) # 证券名称
     asset_type = Column(String) # 'stock', 'fund', 'future'
     
     prices = relationship("PriceHistory", back_populates="asset", cascade="all, delete-orphan")

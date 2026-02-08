@@ -96,16 +96,43 @@ function AssetChart({ symbol, resetKey, chartMode }) {
 
                 chartRef.current = chart;
 
-                // 默认显示最近1年的数据（约250个交易日）
+                // 根据是否有交易记录决定显示范围
                 const totalBars = adjustedPrices.length;
-                const barsToShow = Math.min(250, totalBars); // 250个交易日 ≈ 1年
-                if (totalBars > barsToShow) {
-                    chart.timeScale().setVisibleLogicalRange({
-                        from: totalBars - barsToShow,
-                        to: totalBars - 1
-                    });
+                
+                if (markers && markers.length > 0) {
+                    // 如果有交易记录，显示包含所有交易记录的时间范围
+                    const markerTimes = markers.map(m => m.time);
+                    const priceTimes = adjustedPrices.map(p => p.time);
+                    
+                    // 找到交易记录对应的索引
+                    const markerIndices = markerTimes.map(time => priceTimes.indexOf(time)).filter(idx => idx !== -1);
+                    
+                    if (markerIndices.length > 0) {
+                        const minMarkerIndex = Math.min(...markerIndices);
+                        const maxMarkerIndex = Math.max(...markerIndices);
+                        
+                        // 显示范围：交易记录前后各扩展100个交易日
+                        const rangeStart = Math.max(0, minMarkerIndex - 100);
+                        const rangeEnd = Math.min(totalBars - 1, maxMarkerIndex + 100);
+                        
+                        chart.timeScale().setVisibleLogicalRange({
+                            from: rangeStart,
+                            to: rangeEnd
+                        });
+                    } else {
+                        chart.timeScale().fitContent();
+                    }
                 } else {
-                    chart.timeScale().fitContent();
+                    // 默认显示最近1年的数据（约250个交易日）
+                    const barsToShow = Math.min(250, totalBars);
+                    if (totalBars > barsToShow) {
+                        chart.timeScale().setVisibleLogicalRange({
+                            from: totalBars - barsToShow,
+                            to: totalBars - 1
+                        });
+                    } else {
+                        chart.timeScale().fitContent();
+                    }
                 }
 
                 // 监听容器尺寸变化，自动调整图表大小
@@ -158,6 +185,10 @@ export default function App() {
     const [chartMode, setChartMode] = useState('candlestick');
     const [analysisViewMode, setAnalysisViewMode] = useState('all'); // 'all' or 'traded'
     const [tradedAssets, setTradedAssets] = useState([]);
+    const [transactions, setTransactions] = useState([]);
+    const [uploading, setUploading] = useState(false);
+    const [syncingAll, setSyncingAll] = useState(false);
+    const [syncProgress, setSyncProgress] = useState({ current: 0, total: 0 });
 
     // 过滤分析页面的股票列表
     const filteredAnalysisAssets = (analysisViewMode === 'traded' ? tradedAssets : 资产).filter(item => {
@@ -185,6 +216,10 @@ export default function App() {
 
             const curveRes = await axios.get(`${API_BASE}/portfolio/equity-curve`);
             setEquityCurve(curveRes.data);
+
+            // Fetch transactions
+            const txRes = await axios.get(`${API_BASE}/transactions`);
+            setTransactions(txRes.data);
         } catch (err) {
             console.error("Failed to fetch data", err);
         }
@@ -351,7 +386,7 @@ export default function App() {
                                 <h2 className="text-lg font-semibold mb-4 text-gray-700">个股分析 - 选择标的</h2>
 
                                 {/* 视图模式切换 */}
-                                <div className="flex gap-2 mb-4">
+                                <div className="flex gap-2 mb-4 flex-wrap items-center">
                                     <button
                                         onClick={() => setAnalysisViewMode('all')}
                                         className={`px-3 py-1.5 text-xs rounded border transition-colors ${
@@ -372,6 +407,62 @@ export default function App() {
                                     >
                                         持仓历史 ({tradedAssets.length})
                                     </button>
+                                    {tradedAssets.length > 0 && (
+                                        <button
+                                            onClick={async () => {
+                                                if (syncingAll) return;
+                                                setSyncingAll(true);
+                                                setSyncProgress({ current: 0, total: tradedAssets.length });
+                                                
+                                                let successCount = 0;
+                                                let failCount = 0;
+                                                
+                                                for (let i = 0; i < tradedAssets.length; i++) {
+                                                    const asset = tradedAssets[i];
+                                                    setSyncProgress({ current: i + 1, total: tradedAssets.length });
+                                                    
+                                                    try {
+                                                        await axios.post(`${API_BASE}/assets/sync/${asset.symbol}`);
+                                                        successCount++;
+                                                    } catch (err) {
+                                                        console.error(`同步 ${asset.symbol} 失败:`, err);
+                                                        failCount++;
+                                                    }
+                                                }
+                                                
+                                                setSyncingAll(false);
+                                                setSyncProgress({ current: 0, total: 0 });
+                                                
+                                                let message = `✅ 批量同步完成！\n\n`;
+                                                message += `📊 统计:\n`;
+                                                message += `• 成功: ${successCount} 个\n`;
+                                                if (failCount > 0) {
+                                                    message += `• 失败: ${failCount} 个\n`;
+                                                }
+                                                alert(message);
+                                                
+                                                await fetchData();
+                                            }}
+                                            disabled={syncingAll}
+                                            className={`px-3 py-1.5 text-xs rounded border transition-colors flex items-center gap-1 ${
+                                                syncingAll
+                                                    ? 'bg-gray-100 text-gray-400 border-gray-300 cursor-not-allowed'
+                                                    : 'bg-emerald-50 text-emerald-600 border-emerald-300 hover:bg-emerald-100'
+                                            }`}
+                                        >
+                                            {syncingAll ? (
+                                                <>
+                                                    <RefreshCw size={14} className="animate-spin" />
+                                                    同步中 {syncProgress.current}/{syncProgress.total}
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <RefreshCw size={14} />
+                                                    一键同步持仓标的
+                                                </>
+                                            )}
+                                        </button>
+                                    )}
                                 </div>
 
                                 {/* 搜索和下拉选择 */}
@@ -476,26 +567,120 @@ export default function App() {
                     )}
 
                     {activeTab === 'transactions' && (
-                        <div className="bg-white p-6 rounded-xl border border-gray-200 max-w-2xl mx-auto text-center">
-                            <div className="mb-6 inline-block p-4 rounded-full bg-gray-100 text-indigo-600">
-                                <Upload size={48} />
-                            </div>
-                            <h2 className="text-xl font-bold mb-2">导入投资记录</h2>
-                            <p className="text-gray-500 mb-8">上传 CSV 文件。格式要求: date, symbol, type, quantity, price, fees</p>
-                            <input type="file" className="hidden" id="csv-upload" onChange={async (e) => {
-                                const file = e.target.files[0];
-                                if (!file) return;
-                                const formData = new FormData();
-                                formData.append('file', file);
-                                try {
-                                    await axios.post(`${API_BASE}/transactions/import`, formData);
-                                    alert("导入成功");
-                                    fetchData();
-                                } catch (err) { alert("导入失败"); }
+                        <div className="space-y-8">
+                            {/* 上传区域 */}
+                            <div className="bg-white p-6 rounded-xl border border-gray-200 max-w-2xl mx-auto">
+                                <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                                    <Upload size={24} />
+                                    导入投资记录
+                                </h2>
+                            <p className="text-gray-500 mb-6">上传 CSV 或 Excel 交割单文件（支持多选，只导入"证券买入"和"证券卖出"记录）</p>
+                            <input type="file" className="hidden" id="csv-upload" multiple onChange={async (e) => {
+                                const files = Array.from(e.target.files);
+                                if (files.length === 0) return;
+                                setUploading(true);
+
+                                let totalImported = 0;
+                                let totalSkipped = 0;
+                                let totalFiltered = 0;
+                                let successCount = 0;
+                                let failCount = 0;
+
+                                for (let i = 0; i < files.length; i++) {
+                                    const file = files[i];
+                                    try {
+                                        const formData = new FormData();
+                                        formData.append('file', file);
+                                        const res = await axios.post(`${API_BASE}/transactions/import`, formData);
+                                        const data = res.data;
+
+                                        if (data.status === 'success') {
+                                            totalImported += data.imported;
+                                            totalSkipped += data.skipped_duplicates;
+                                            totalFiltered += data.filtered_non_trading;
+                                            successCount++;
+                                        }
+                                    } catch (err) {
+                                        failCount++;
+                                        console.error(`导入文件 ${file.name} 失败:`, err);
+                                    }
+                                }
+
+                                let message = `✅ 批量导入完成！\n\n`;
+                                message += `📁 成功: ${successCount} 个文件\n`;
+                                if (failCount > 0) {
+                                    message += `❌ 失败: ${failCount} 个文件\n`;
+                                }
+                                message += `\n📊 统计:\n`;
+                                message += `• 新增记录: ${totalImported} 条\n`;
+                                if (totalSkipped > 0) {
+                                    message += `• 跳过重复: ${totalSkipped} 条\n`;
+                                }
+                                if (totalFiltered > 0) {
+                                    message += `• 过滤非交易记录: ${totalFiltered} 条\n`;
+                                }
+
+                                alert(message);
+                                await fetchData();
+                                setUploading(false);
+                                e.target.value = '';
                             }} />
-                            <label htmlFor="csv-upload" className="bg-white border-2 border-indigo-500 text-indigo-600 hover:bg-indigo-50 px-8 py-3 rounded-lg cursor-pointer font-bold inline-block transition-colors">
-                                选择文件并上传
-                            </label>
+                                <label htmlFor="csv-upload" className={`border-2 border-indigo-500 text-indigo-600 hover:bg-indigo-50 px-8 py-3 rounded-lg cursor-pointer font-bold inline-block transition-colors flex items-center gap-2 ${uploading ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                                    {uploading ? (
+                                        <>
+                                            <RefreshCw size={18} className="animate-spin" />
+                                            批量上传中...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Upload size={18} />
+                                            选择文件（支持多选）
+                                        </>
+                                    )}
+                                </label>
+                            </div>
+
+                            {/* 交易记录列表 */}
+                            <div className="bg-white p-6 rounded-xl border border-gray-200">
+                                <h2 className="text-xl font-bold mb-4">交易记录 ({transactions.length} 条)</h2>
+                                {transactions.length === 0 ? (
+                                    <div className="text-center py-8 text-gray-500">
+                                        暂无交易记录，请先导入交割单
+                                    </div>
+                                ) : (
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-left text-sm">
+                                            <thead>
+                                                <tr className="border-b border-gray-200 text-gray-500">
+                                                    <th className="pb-2">日期</th>
+                                                    <th className="pb-2">代码/名称</th>
+                                                    <th className="pb-2">类型</th>
+                                                    <th className="pb-2">数量</th>
+                                                    <th className="pb-2">价格</th>
+                                                    <th className="pb-2">费用</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {transactions.map((tx, idx) => (
+                                                    <tr key={idx} className="border-b border-gray-200/50 hover:bg-gray-100/30">
+                                                        <td className="py-3">{tx.date}</td>
+                                                        <td className="py-3">
+                                                            <div className="font-medium">{tx.symbol}</div>
+                                                            <div className="text-xs text-gray-500">{tx.name || '未知'}</div>
+                                                        </td>
+                                                        <td className={`py-3 ${tx.type === 'buy' ? 'text-red-500' : 'text-green-500'}`}>
+                                                            {tx.type === 'buy' ? '买入' : '卖出'}
+                                                        </td>
+                                                        <td className="py-3">{tx.quantity}</td>
+                                                        <td className="py-3">¥{parseFloat(tx.price).toFixed(2)}</td>
+                                                        <td className="py-3">¥{parseFloat(tx.fees).toFixed(2)}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     )}
                 </main>

@@ -30,6 +30,24 @@ def debug_transactions(db: Session = Depends(get_db)):
         "transactions": [{"id": t.id, "asset_id": t.asset_id, "date": str(t.date), "type": t.type, "quantity": t.quantity} for t in txs]
     }
 
+@app.get("/transactions")
+def get_transactions(db: Session = Depends(get_db)):
+    """Get all transactions with asset information"""
+    txs = db.query(Transaction).join(Asset).order_by(Transaction.date.desc()).all()
+    return [
+        {
+            "id": t.id,
+            "symbol": t.asset.symbol,
+            "name": t.asset.name,
+            "date": str(t.date),
+            "type": t.type,
+            "quantity": t.quantity,
+            "price": t.price,
+            "fees": t.fees
+        }
+        for t in txs
+    ]
+
 def safe_float(value: Optional[float]) -> Optional[float]:
     """Convert float value to JSON-safe format (handle inf, -inf, nan)."""
     if value is None:
@@ -98,22 +116,99 @@ def sync_asset(symbol: str, asset_type: str = "stock", db: Session = Depends(get
 @app.post("/transactions/import")
 async def import_transactions(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
-    Import transactions from CSV. 
-    Expected format: date, symbol, type, quantity, price, fees
+    Import transactions from CSV or Excel file.
+    Expected formats:
+    - CSV: date, symbol, type, quantity, price, fees
+    - Excel (券商交割单): 交割日期, 证券代码, 证券名称, 业务类型, 成交价格, 成交数量, 佣金, 印花税, 过户费
+      注意：只导入"证券买入"和"证券卖出"的记录，其他业务类型会被自动过滤
+    Supports: .csv, .xls, .xlsx
     """
     contents = await file.read()
-    df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
+    filename = file.filename.lower()
+    
+    # 根据文件类型读取
+    if filename.endswith('.csv'):
+        try:
+            df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
+        except:
+            df = pd.read_csv(io.StringIO(contents.decode('gbk')))
+    elif filename.endswith(('.xls', '.xlsx')):
+        try:
+            df = pd.read_excel(io.BytesIO(contents))
+        except:
+            df = pd.read_csv(io.StringIO(contents.decode('gbk')), sep='\t')
+    else:
+        raise HTTPException(status_code=400, detail="只支持 CSV 和 Excel 文件格式")
+    
+    # 处理带引号的列名（如 ="交割日期" -> 交割日期）
+    if any('=' in str(col) for col in df.columns):
+        df.columns = df.columns.astype(str).str.replace(r'^="|"$', '', regex=True)
+        # 同时清理数据中的引号格式（只清理字符串列，数字列保持不变）
+        for col in df.columns:
+            if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col].dtype):
+                df[col] = df[col].astype(str).str.replace(r'^="|"$', '', regex=True)
+    
+    # 检测是否是券商交割单格式
+    if '交割日期' in df.columns and '证券代码' in df.columns:
+        # 券商交割单格式
+        
+        # 记录过滤前的行数
+        total_rows_before = len(df)
+        
+        # 过滤只保留"证券买入"和"证券卖出"的行
+        df = df[df['业务类型'].isin(['证券买入', '证券卖出'])].copy()
+        
+        # 记录被过滤的行数
+        filtered_count = total_rows_before - len(df)
+        
+        # 重命名列
+        df = df.rename(columns={
+            '交割日期': 'date',
+            '证券代码': 'symbol',
+            '证券名称': 'asset_name',
+            '业务类型': 'type',
+            '成交价格': 'price',
+            '成交数量': 'quantity',
+            '佣金': 'comm',
+            '印花税': 'tax',
+            '过户费': 'fee'
+        })
+        # 处理业务类型: 证券买入->buy, 证券卖出->sell
+        df['type'] = df['type'].apply(lambda x: 'buy' if '买入' in str(x) else 'sell')
+        # 计算总费用
+        df['fees'] = df['comm'].fillna(0) + df['tax'].fillna(0) + df['fee'].fillna(0)
+        df['symbol'] = df['symbol'].astype(str).str.zfill(6) # 补齐6位
+        # 处理日期格式 (如 20260113 -> 2026-01-13，这里可能是13日但pandas解析为1970年)
+        # 检查是否需要特殊处理
+        df['date'] = pd.to_datetime(df['date'], format='%Y%m%d', errors='coerce').dt.date
+    else:
+        # 标准CSV格式: date, symbol, type, quantity, price, fees
+        # 标准CSV不过滤
+        filtered_count = 0
+        
+        df = df.rename(columns={
+            'date': 'date',
+            'symbol': 'symbol',
+            'type': 'type',
+            'quantity': 'quantity',
+            'price': 'price',
+            'fees': 'fees'
+        })
     
     imported_count = 0
     skipped_count = 0
+    
+    # 初始化 filtered_count 变量（非交割单格式时为0）
+    if 'filtered_count' not in locals():
+        filtered_count = 0
     
     for _, row in df.iterrows():
         # Ensure asset exists
         asset = db.query(Asset).filter(Asset.symbol == str(row['symbol'])).first()
         if not asset:
-            # Auto sync asset info if missing
-            # In a real app, you might want more metadata
-            asset = Asset(symbol=str(row['symbol']), asset_type='stock') # default to stock
+            # 获取证券名称
+            asset_name = str(row.get('asset_name', '')) if 'asset_name' in row else ''
+            asset = Asset(symbol=str(row['symbol']), name=asset_name, asset_type='stock')
             db.add(asset)
             db.commit()
             db.refresh(asset)
@@ -158,11 +253,17 @@ async def import_transactions(file: UploadFile = File(...), db: Session = Depend
         "status": "success",
         "total_rows": len(df),
         "imported": imported_count,
-        "skipped_duplicates": skipped_count
+        "skipped_duplicates": skipped_count,
+        "filtered_non_trading": filtered_count
     }
     
-    if skipped_count > 0:
-        result["message"] = f"导入完成，跳过了 {skipped_count} 条重复记录"
+    if skipped_count > 0 or filtered_count > 0:
+        messages = []
+        if skipped_count > 0:
+            messages.append(f"跳过 {skipped_count} 条重复记录")
+        if filtered_count > 0:
+            messages.append(f"过滤 {filtered_count} 条非交易记录")
+        result["message"] = "导入完成，" + "、".join(messages)
     
     return result
 
