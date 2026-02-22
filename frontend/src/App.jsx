@@ -13,15 +13,17 @@ function AssetChart({ symbol, resetKey, chartMode }) {
     const chartRef = React.useRef();
     const abortControllerRef = React.useRef();
     const resizeObserverRef = React.useRef();
+    const isActiveRef = React.useRef(true);
 
     useEffect(() => {
         if (!symbol) return;
 
+        isActiveRef.current = true;
         abortControllerRef.current = new AbortController();
 
         const fetchChartData = async () => {
             try {
-                if (abortControllerRef.current.signal.aborted) return;
+                if (!isActiveRef.current || abortControllerRef.current.signal.aborted) return;
 
                 if (chartRef.current) {
                     chartRef.current.remove();
@@ -32,11 +34,11 @@ function AssetChart({ symbol, resetKey, chartMode }) {
                     signal: abortControllerRef.current.signal
                 });
 
-                if (abortControllerRef.current.signal.aborted) return;
+                if (!isActiveRef.current || abortControllerRef.current.signal.aborted) return;
 
                 const { prices, markers } = res.data;
 
-                if (!chartContainerRef.current) return;
+                if (!isActiveRef.current || !chartContainerRef.current) return;
 
                 const chart = createChart(chartContainerRef.current, {
                     layout: { background: { color: '#ffffff' }, textColor: '#374151' },
@@ -156,6 +158,7 @@ function AssetChart({ symbol, resetKey, chartMode }) {
         fetchChartData();
 
         return () => {
+            isActiveRef.current = false;
             if (abortControllerRef.current) {
                 abortControllerRef.current.abort();
             }
