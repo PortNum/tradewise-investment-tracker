@@ -61,8 +61,16 @@ function AssetChart({ symbol, resetKey, chartMode }) {
                         close: p.qfq_close
                     }));
                     candleSeries.setData(adjustedPrices);
-                    if (chartMode === 'candlestick' && markers) {
-                        candleSeries.setMarkers(markers);
+                    // K线图显示买卖点标记
+                    if (markers && markers.length > 0) {
+                        const candleMarkers = markers.map(m => ({
+                            time: m.time,
+                            position: m.position,
+                            color: m.color,
+                            shape: m.shape,
+                            text: m.notes ? `${m.text}\n${m.notes}` : m.text
+                        }));
+                        candleSeries.setMarkers(candleMarkers);
                     }
                 }
 
@@ -89,7 +97,7 @@ function AssetChart({ symbol, resetKey, chartMode }) {
                             position: 'inBar', // 显示在折线上
                             color: m.color === 'red' ? '#ef4444' : '#22c55e', // 红点买入，绿点卖出
                             shape: 'circle', // 圆点形状
-                            text: m.text,
+                            text: m.notes ? `${m.text}\n${m.notes}` : m.text,
                             size: 1.5 // 圆点大小（较小）
                         }));
                         lineSeries.setMarkers(tradeMarkers);
@@ -99,12 +107,13 @@ function AssetChart({ symbol, resetKey, chartMode }) {
                 chartRef.current = chart;
 
                 // 根据是否有交易记录决定显示范围
-                const totalBars = adjustedPrices.length;
+                // 使用 prices 而不是 adjustedPrices，因为 adjustedPrices 可能未定义
+                const totalBars = prices.length;
                 
                 if (markers && markers.length > 0) {
                     // 如果有交易记录，显示包含所有交易记录的时间范围
                     const markerTimes = markers.map(m => m.time);
-                    const priceTimes = adjustedPrices.map(p => p.time);
+                    const priceTimes = prices.map(p => p.time);
                     
                     // 找到交易记录对应的索引
                     const markerIndices = markerTimes.map(time => priceTimes.indexOf(time)).filter(idx => idx !== -1);
@@ -192,6 +201,20 @@ export default function App() {
     const [uploading, setUploading] = useState(false);
     const [syncingAll, setSyncingAll] = useState(false);
     const [syncProgress, setSyncProgress] = useState({ current: 0, total: 0 });
+    
+    // 交易记录过滤和表单状态
+    const [txFilterSymbol, setTxFilterSymbol] = useState('');
+    const [showTxForm, setShowTxForm] = useState(false);
+    const [editingTx, setEditingTx] = useState(null);
+    const [txFormData, setTxFormData] = useState({
+        symbol: '',
+        date: '',
+        type: 'buy',
+        quantity: '',
+        price: '',
+        fees: '0',
+        notes: ''
+    });
 
     // 过滤分析页面的股票列表
     const filteredAnalysisAssets = (analysisViewMode === 'traded' ? tradedAssets : 资产).filter(item => {
@@ -205,7 +228,7 @@ export default function App() {
         fetchData();
     }, []);
 
-    const fetchData = async () => {
+    const fetchData = async (symbolFilter = null) => {
         try {
             const assetsRes = await axios.get(`${API_BASE}/assets`);
             set资产(assetsRes.data);
@@ -220,11 +243,80 @@ export default function App() {
             const curveRes = await axios.get(`${API_BASE}/portfolio/equity-curve`);
             setEquityCurve(curveRes.data);
 
-            // Fetch transactions
-            const txRes = await axios.get(`${API_BASE}/transactions`);
+            // Fetch transactions with optional filter
+            // 使用传入的参数或当前状态
+            const filterSymbol = symbolFilter !== null ? symbolFilter : txFilterSymbol;
+            const txUrl = filterSymbol 
+                ? `${API_BASE}/transactions?symbol=${filterSymbol}`
+                : `${API_BASE}/transactions`;
+            const txRes = await axios.get(txUrl);
             setTransactions(txRes.data);
         } catch (err) {
             console.error("Failed to fetch data", err);
+        }
+    };
+    
+    // 重置表单
+    const resetTxForm = () => {
+        setTxFormData({
+            symbol: '',
+            date: '',
+            type: 'buy',
+            quantity: '',
+            price: '',
+            fees: '0',
+            notes: ''
+        });
+        setEditingTx(null);
+    };
+    
+    // 打开编辑表单
+    const openEditForm = (tx) => {
+        setEditingTx(tx);
+        setTxFormData({
+            symbol: tx.symbol,
+            date: tx.date,
+            type: tx.type,
+            quantity: tx.quantity.toString(),
+            price: tx.price.toString(),
+            fees: tx.fees.toString(),
+            notes: tx.notes || ''
+        });
+        setShowTxForm(true);
+    };
+    
+    // 保存交易记录
+    const saveTransaction = async () => {
+        try {
+            const payload = {
+                ...txFormData,
+                quantity: parseFloat(txFormData.quantity),
+                price: parseFloat(txFormData.price),
+                fees: parseFloat(txFormData.fees || 0)
+            };
+            
+            if (editingTx) {
+                await axios.put(`${API_BASE}/transactions/${editingTx.id}`, payload);
+            } else {
+                await axios.post(`${API_BASE}/transactions`, payload);
+            }
+            
+            await fetchData();
+            setShowTxForm(false);
+            resetTxForm();
+        } catch (err) {
+            alert('保存失败: ' + (err.response?.data?.detail || err.message));
+        }
+    };
+    
+    // 删除交易记录
+    const deleteTransaction = async (txId) => {
+        if (!confirm('确定要删除这条交易记录吗？')) return;
+        try {
+            await axios.delete(`${API_BASE}/transactions/${txId}`);
+            await fetchData();
+        } catch (err) {
+            alert('删除失败: ' + (err.response?.data?.detail || err.message));
         }
     };
 
@@ -554,7 +646,7 @@ export default function App() {
 
                                 {selectedAnalysisSymbol ? (
                                     <div className="mx-auto">
-                                        <AssetChart symbol={selectedAnalysisSymbol} resetKey={chartResetKey} chartMode={chartMode} />
+                                        <AssetChart key={`${selectedAnalysisSymbol}-${chartMode}`} symbol={selectedAnalysisSymbol} resetKey={chartResetKey} chartMode={chartMode} />
                                     </div>
                                 ) : (
                                     <div className="h-64 flex items-center justify-center text-gray-500">
@@ -571,63 +663,176 @@ export default function App() {
 
                     {activeTab === 'transactions' && (
                         <div className="space-y-8">
-                            {/* 上传区域 */}
-                            <div className="bg-white p-6 rounded-xl border border-gray-200 max-w-2xl mx-auto">
-                                <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
-                                    <Upload size={24} />
-                                    导入投资记录
-                                </h2>
-                            <p className="text-gray-500 mb-6">上传 CSV 或 Excel 交割单文件（支持多选，只导入"证券买入"和"证券卖出"记录）</p>
-                            <input type="file" className="hidden" id="csv-upload" multiple onChange={async (e) => {
-                                const files = Array.from(e.target.files);
-                                if (files.length === 0) return;
-                                setUploading(true);
+                            {/* 手工录入和导入区域 */}
+                            <div className="bg-white p-6 rounded-xl border border-gray-200 max-w-4xl mx-auto">
+                                <div className="flex items-center justify-between mb-4">
+                                    <h2 className="text-xl font-bold flex items-center gap-2">
+                                        <Upload size={24} />
+                                        交易记录管理
+                                    </h2>
+                                    <button
+                                        onClick={() => {
+                                            resetTxForm();
+                                            setShowTxForm(!showTxForm);
+                                        }}
+                                        className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors text-sm"
+                                    >
+                                        {showTxForm ? '取消' : '+ 手工录入'}
+                                    </button>
+                                </div>
+                                
+                                {/* 手工录入表单 */}
+                                {showTxForm && (
+                                    <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                                        <h3 className="font-semibold mb-4 text-gray-700">
+                                            {editingTx ? '编辑交易记录' : '新建交易记录'}
+                                        </h3>
+                                        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                                            <div>
+                                                <label className="block text-xs text-gray-600 mb-1">股票代码</label>
+                                                <input
+                                                    type="text"
+                                                    value={txFormData.symbol}
+                                                    onChange={(e) => setTxFormData({...txFormData, symbol: e.target.value})}
+                                                    placeholder="如 600519"
+                                                    className="w-full border border-gray-300 px-3 py-2 rounded text-sm focus:outline-none focus:ring-2 ring-indigo-500"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs text-gray-600 mb-1">日期</label>
+                                                <input
+                                                    type="date"
+                                                    value={txFormData.date}
+                                                    onChange={(e) => setTxFormData({...txFormData, date: e.target.value})}
+                                                    className="w-full border border-gray-300 px-3 py-2 rounded text-sm focus:outline-none focus:ring-2 ring-indigo-500"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs text-gray-600 mb-1">类型</label>
+                                                <select
+                                                    value={txFormData.type}
+                                                    onChange={(e) => setTxFormData({...txFormData, type: e.target.value})}
+                                                    className="w-full border border-gray-300 px-3 py-2 rounded text-sm focus:outline-none focus:ring-2 ring-indigo-500"
+                                                >
+                                                    <option value="buy">买入</option>
+                                                    <option value="sell">卖出</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs text-gray-600 mb-1">数量</label>
+                                                <input
+                                                    type="number"
+                                                    value={txFormData.quantity}
+                                                    onChange={(e) => setTxFormData({...txFormData, quantity: e.target.value})}
+                                                    placeholder="100"
+                                                    className="w-full border border-gray-300 px-3 py-2 rounded text-sm focus:outline-none focus:ring-2 ring-indigo-500"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs text-gray-600 mb-1">价格</label>
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    value={txFormData.price}
+                                                    onChange={(e) => setTxFormData({...txFormData, price: e.target.value})}
+                                                    placeholder="10.00"
+                                                    className="w-full border border-gray-300 px-3 py-2 rounded text-sm focus:outline-none focus:ring-2 ring-indigo-500"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs text-gray-600 mb-1">费用</label>
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    value={txFormData.fees}
+                                                    onChange={(e) => setTxFormData({...txFormData, fees: e.target.value})}
+                                                    placeholder="0"
+                                                    className="w-full border border-gray-300 px-3 py-2 rounded text-sm focus:outline-none focus:ring-2 ring-indigo-500"
+                                                />
+                                            </div>
+                                            <div className="col-span-2 md:col-span-3">
+                                                <label className="block text-xs text-gray-600 mb-1">交易日志</label>
+                                                <textarea
+                                                    value={txFormData.notes}
+                                                    onChange={(e) => setTxFormData({...txFormData, notes: e.target.value})}
+                                                    placeholder="记录交易思路或备注..."
+                                                    rows="2"
+                                                    className="w-full border border-gray-300 px-3 py-2 rounded text-sm focus:outline-none focus:ring-2 ring-indigo-500"
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className="mt-4 flex gap-2">
+                                            <button
+                                                onClick={saveTransaction}
+                                                className="bg-indigo-600 text-white px-4 py-2 rounded text-sm hover:bg-indigo-700 transition-colors"
+                                            >
+                                                保存
+                                            </button>
+                                            <button
+                                                onClick={() => {
+                                                    setShowTxForm(false);
+                                                    resetTxForm();
+                                                }}
+                                                className="bg-gray-200 text-gray-700 px-4 py-2 rounded text-sm hover:bg-gray-300 transition-colors"
+                                            >
+                                                取消
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                                
+                                {/* 批量导入 */}
+                                <p className="text-gray-500 mb-4">上传 CSV 或 Excel 交割单文件（支持多选，只导入"证券买入"和"证券卖出"记录）</p>
+                                <input type="file" className="hidden" id="csv-upload" multiple onChange={async (e) => {
+                                    const files = Array.from(e.target.files);
+                                    if (files.length === 0) return;
+                                    setUploading(true);
 
-                                let totalImported = 0;
-                                let totalSkipped = 0;
-                                let totalFiltered = 0;
-                                let successCount = 0;
-                                let failCount = 0;
+                                    let totalImported = 0;
+                                    let totalSkipped = 0;
+                                    let totalFiltered = 0;
+                                    let successCount = 0;
+                                    let failCount = 0;
 
-                                for (let i = 0; i < files.length; i++) {
-                                    const file = files[i];
-                                    try {
-                                        const formData = new FormData();
-                                        formData.append('file', file);
-                                        const res = await axios.post(`${API_BASE}/transactions/import`, formData);
-                                        const data = res.data;
+                                    for (let i = 0; i < files.length; i++) {
+                                        const file = files[i];
+                                        try {
+                                            const formData = new FormData();
+                                            formData.append('file', file);
+                                            const res = await axios.post(`${API_BASE}/transactions/import`, formData);
+                                            const data = res.data;
 
-                                        if (data.status === 'success') {
-                                            totalImported += data.imported;
-                                            totalSkipped += data.skipped_duplicates;
-                                            totalFiltered += data.filtered_non_trading;
-                                            successCount++;
+                                            if (data.status === 'success') {
+                                                totalImported += data.imported;
+                                                totalSkipped += data.skipped_duplicates;
+                                                totalFiltered += data.filtered_non_trading;
+                                                successCount++;
+                                            }
+                                        } catch (err) {
+                                            failCount++;
+                                            console.error(`导入文件 ${file.name} 失败:`, err);
                                         }
-                                    } catch (err) {
-                                        failCount++;
-                                        console.error(`导入文件 ${file.name} 失败:`, err);
                                     }
-                                }
 
-                                let message = `✅ 批量导入完成！\n\n`;
-                                message += `📁 成功: ${successCount} 个文件\n`;
-                                if (failCount > 0) {
-                                    message += `❌ 失败: ${failCount} 个文件\n`;
-                                }
-                                message += `\n📊 统计:\n`;
-                                message += `• 新增记录: ${totalImported} 条\n`;
-                                if (totalSkipped > 0) {
-                                    message += `• 跳过重复: ${totalSkipped} 条\n`;
-                                }
-                                if (totalFiltered > 0) {
-                                    message += `• 过滤非交易记录: ${totalFiltered} 条\n`;
-                                }
+                                    let message = `✅ 批量导入完成！\n\n`;
+                                    message += `📁 成功: ${successCount} 个文件\n`;
+                                    if (failCount > 0) {
+                                        message += `❌ 失败: ${failCount} 个文件\n`;
+                                    }
+                                    message += `\n📊 统计:\n`;
+                                    message += `• 新增记录: ${totalImported} 条\n`;
+                                    if (totalSkipped > 0) {
+                                        message += `• 跳过重复: ${totalSkipped} 条\n`;
+                                    }
+                                    if (totalFiltered > 0) {
+                                        message += `• 过滤非交易记录: ${totalFiltered} 条\n`;
+                                    }
 
-                                alert(message);
-                                await fetchData();
-                                setUploading(false);
-                                e.target.value = '';
-                            }} />
+                                    alert(message);
+                                    await fetchData();
+                                    setUploading(false);
+                                    e.target.value = '';
+                                }} />
                                 <label htmlFor="csv-upload" className={`border-2 border-indigo-500 text-indigo-600 hover:bg-indigo-50 px-8 py-3 rounded-lg cursor-pointer font-bold inline-block transition-colors flex items-center gap-2 ${uploading ? 'opacity-50 cursor-not-allowed' : ''}`}>
                                     {uploading ? (
                                         <>
@@ -637,7 +842,7 @@ export default function App() {
                                     ) : (
                                         <>
                                             <Upload size={18} />
-                                            选择文件（支持多选）
+                                            批量导入（支持多选）
                                         </>
                                     )}
                                 </label>
@@ -645,10 +850,46 @@ export default function App() {
 
                             {/* 交易记录列表 */}
                             <div className="bg-white p-6 rounded-xl border border-gray-200">
-                                <h2 className="text-xl font-bold mb-4">交易记录 ({transactions.length} 条)</h2>
+                                <div className="flex items-center justify-between mb-4">
+                                    <h2 className="text-xl font-bold">交易记录 ({transactions.length} 条)</h2>
+                                    
+                                    {/* 过滤选择器 */}
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-sm text-gray-600">过滤:</span>
+                                        <select
+                                            value={txFilterSymbol}
+                                            onChange={(e) => {
+                                                const newSymbol = e.target.value;
+                                                setTxFilterSymbol(newSymbol);
+                                                // 直接传递新值给 fetchData，避免闭包问题
+                                                fetchData(newSymbol);
+                                            }}
+                                            className="border border-gray-300 px-3 py-1 rounded text-sm focus:outline-none focus:ring-2 ring-indigo-500"
+                                        >
+                                            <option value="">全部标的</option>
+                                            {tradedAssets.map(asset => (
+                                                <option key={asset.symbol} value={asset.symbol}>
+                                                    {asset.symbol} {asset.name ? `(${asset.name})` : ''}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        {txFilterSymbol && (
+                                            <button
+                                                onClick={() => {
+                                                    setTxFilterSymbol('');
+                                                    fetchData('');
+                                                }}
+                                                className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
+                                            >
+                                                清除
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                                
                                 {transactions.length === 0 ? (
                                     <div className="text-center py-8 text-gray-500">
-                                        暂无交易记录，请先导入交割单
+                                        暂无交易记录，请先导入或手工录入
                                     </div>
                                 ) : (
                                     <div className="overflow-x-auto">
@@ -661,6 +902,8 @@ export default function App() {
                                                     <th className="pb-2">数量</th>
                                                     <th className="pb-2">价格</th>
                                                     <th className="pb-2">费用</th>
+                                                    <th className="pb-2">日志</th>
+                                                    <th className="pb-2">操作</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
@@ -677,6 +920,31 @@ export default function App() {
                                                         <td className="py-3">{tx.quantity}</td>
                                                         <td className="py-3">¥{parseFloat(tx.price).toFixed(2)}</td>
                                                         <td className="py-3">¥{parseFloat(tx.fees).toFixed(2)}</td>
+                                                        <td className="py-3 max-w-xs truncate" title={tx.notes}>
+                                                            {tx.notes ? (
+                                                                <span className="text-xs text-gray-600 bg-gray-100 px-2 py-1 rounded cursor-help">
+                                                                    {tx.notes.length > 10 ? tx.notes.substring(0, 10) + '...' : tx.notes}
+                                                                </span>
+                                                            ) : (
+                                                                <span className="text-gray-300">-</span>
+                                                            )}
+                                                        </td>
+                                                        <td className="py-3">
+                                                            <div className="flex gap-2">
+                                                                <button
+                                                                    onClick={() => openEditForm(tx)}
+                                                                    className="text-xs text-indigo-600 hover:text-indigo-800 px-2 py-1 border border-indigo-300 rounded hover:bg-indigo-50 transition-colors"
+                                                                >
+                                                                    编辑
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => deleteTransaction(tx.id)}
+                                                                    className="text-xs text-red-600 hover:text-red-800 px-2 py-1 border border-red-300 rounded hover:bg-red-50 transition-colors"
+                                                                >
+                                                                    删除
+                                                                </button>
+                                                            </div>
+                                                        </td>
                                                     </tr>
                                                 ))}
                                             </tbody>
