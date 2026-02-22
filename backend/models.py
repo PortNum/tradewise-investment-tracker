@@ -49,7 +49,8 @@ class Transaction(Base):
     quantity = Column(Float, nullable=False)
     price = Column(Float, nullable=False)
     fees = Column(Float, default=0.0)
-    
+    notes = Column(String, nullable=True)  # 交易日志/备注
+
     asset = relationship("Asset", back_populates="transactions")
 
 # Database setup

@@ -6,10 +6,30 @@ import io
 import math
 from datetime import date
 from typing import List, Optional
+from pydantic import BaseModel
 
 from models import SessionLocal, Asset, Transaction, PriceHistory, init_db
 from sync import sync_asset_data
 from portfolio import get_portfolio_allocation, calculate_equity_curve
+
+# Pydantic models for request validation
+class TransactionCreate(BaseModel):
+    symbol: str
+    date: str  # YYYY-MM-DD
+    type: str  # 'buy' or 'sell'
+    quantity: float
+    price: float
+    fees: float = 0.0
+    notes: Optional[str] = None
+
+class TransactionUpdate(BaseModel):
+    symbol: Optional[str] = None
+    date: Optional[str] = None
+    type: Optional[str] = None
+    quantity: Optional[float] = None
+    price: Optional[float] = None
+    fees: Optional[float] = None
+    notes: Optional[str] = None
 
 app = FastAPI(title="TradeWise API - 智慧投资追踪系统")
 
@@ -31,9 +51,14 @@ def debug_transactions(db: Session = Depends(get_db)):
     }
 
 @app.get("/transactions")
-def get_transactions(db: Session = Depends(get_db)):
-    """Get all transactions with asset information"""
-    txs = db.query(Transaction).join(Asset).order_by(Transaction.date.desc()).all()
+def get_transactions(symbol: Optional[str] = None, db: Session = Depends(get_db)):
+    """Get all transactions with asset information, optionally filter by symbol"""
+    query = db.query(Transaction).join(Asset)
+    
+    if symbol:
+        query = query.filter(Asset.symbol == symbol)
+    
+    txs = query.order_by(Transaction.date.desc()).all()
     return [
         {
             "id": t.id,
@@ -43,10 +68,108 @@ def get_transactions(db: Session = Depends(get_db)):
             "type": t.type,
             "quantity": t.quantity,
             "price": t.price,
-            "fees": t.fees
+            "fees": t.fees,
+            "notes": t.notes
         }
         for t in txs
     ]
+
+@app.post("/transactions")
+def create_transaction(tx: TransactionCreate, db: Session = Depends(get_db)):
+    """Create a new transaction manually"""
+    # Ensure asset exists
+    asset = db.query(Asset).filter(Asset.symbol == tx.symbol).first()
+    if not asset:
+        asset = Asset(symbol=tx.symbol, name='', asset_type='stock')
+        db.add(asset)
+        db.commit()
+        db.refresh(asset)
+    
+    # Parse date
+    tx_date = pd.to_datetime(tx.date).date()
+    
+    new_tx = Transaction(
+        asset_id=asset.id,
+        date=tx_date,
+        type=tx.type,
+        quantity=tx.quantity,
+        price=tx.price,
+        fees=tx.fees,
+        notes=tx.notes
+    )
+    db.add(new_tx)
+    db.commit()
+    db.refresh(new_tx)
+    
+    return {
+        "id": new_tx.id,
+        "symbol": asset.symbol,
+        "name": asset.name,
+        "date": str(new_tx.date),
+        "type": new_tx.type,
+        "quantity": new_tx.quantity,
+        "price": new_tx.price,
+        "fees": new_tx.fees,
+        "notes": new_tx.notes
+    }
+
+@app.put("/transactions/{tx_id}")
+def update_transaction(tx_id: int, tx: TransactionUpdate, db: Session = Depends(get_db)):
+    """Update an existing transaction"""
+    existing_tx = db.query(Transaction).filter(Transaction.id == tx_id).first()
+    if not existing_tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    # Update asset if symbol changed
+    if tx.symbol:
+        asset = db.query(Asset).filter(Asset.symbol == tx.symbol).first()
+        if not asset:
+            asset = Asset(symbol=tx.symbol, name='', asset_type='stock')
+            db.add(asset)
+            db.commit()
+            db.refresh(asset)
+        existing_tx.asset_id = asset.id
+    
+    # Update other fields
+    if tx.date:
+        existing_tx.date = pd.to_datetime(tx.date).date()
+    if tx.type:
+        existing_tx.type = tx.type
+    if tx.quantity is not None:
+        existing_tx.quantity = tx.quantity
+    if tx.price is not None:
+        existing_tx.price = tx.price
+    if tx.fees is not None:
+        existing_tx.fees = tx.fees
+    if tx.notes is not None:
+        existing_tx.notes = tx.notes
+    
+    db.commit()
+    db.refresh(existing_tx)
+    
+    return {
+        "id": existing_tx.id,
+        "symbol": existing_tx.asset.symbol,
+        "name": existing_tx.asset.name,
+        "date": str(existing_tx.date),
+        "type": existing_tx.type,
+        "quantity": existing_tx.quantity,
+        "price": existing_tx.price,
+        "fees": existing_tx.fees,
+        "notes": existing_tx.notes
+    }
+
+@app.delete("/transactions/{tx_id}")
+def delete_transaction(tx_id: int, db: Session = Depends(get_db)):
+    """Delete a transaction"""
+    tx = db.query(Transaction).filter(Transaction.id == tx_id).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    db.delete(tx)
+    db.commit()
+    
+    return {"status": "success", "message": "Transaction deleted"}
 
 def safe_float(value: Optional[float]) -> Optional[float]:
     """Convert float value to JSON-safe format (handle inf, -inf, nan)."""
@@ -318,7 +441,7 @@ def get_chart_data(symbol: str, db: Session = Depends(get_db)):
                 "volume": safe_float(p.volume)
             } for p in prices
         ],
-        "markers": [{"time": str(t.date), "position": "belowBar" if t.type == "buy" else "aboveBar", "color": "red" if t.type == "buy" else "green", "shape": "arrowUp" if t.type == "buy" else "arrowDown", "text": f"{t.type} {t.quantity}"} for t in txs]
+        "markers": [{"time": str(t.date), "position": "belowBar" if t.type == "buy" else "aboveBar", "color": "red" if t.type == "buy" else "green", "shape": "arrowUp" if t.type == "buy" else "arrowDown", "text": f"{t.type} {t.quantity}", "notes": t.notes} for t in txs]
     }
 
 if __name__ == "__main__":
